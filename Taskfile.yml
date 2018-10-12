@@ -1,0 +1,127 @@
+version: '2'
+
+expansions: 3
+vars:
+  VCS: "github.com"
+  OWNER:
+    sh: '[ -z "${OWNER}" ] && basename $(dirname "$(git rev-parse --show-toplevel 2>/dev/null)") || echo "${OWNER}"'
+  PACKAGE:
+    sh: '[ -z "${PACKAGE}" ] && echo -n $(basename "$(git remote get-url origin 2>/dev/null)" .git) || echo -n "${PACKAGE}"'
+  PROJECT: "{{.VCS}}/{{.OWNER}}/{{.PACKAGE}}"
+  SEMVER:
+    sh: '[ -z "${VERSION}" ] && cat VERSION 2>/dev/null || echo -n "${VERSION}"'
+  COMMIT:
+    sh: 'git rev-parse --short HEAD 2>/dev/null || echo -n "DEV"'
+  XC_ARCH:
+    sh: '[ ! -z "${XC_ARCH}" ] && echo -n "${XC_ARCH}" || go env GOARCH'
+  XC_OS:
+    sh: '[ ! -z "${XC_OS}" ] && echo -n "${XC_OS}" || go env GOOS'
+  XC_OSARCH:
+    sh: '[ ! -z "${XC_OSARCH}" ] && echo -n "${XC_OSARCH}" || true'
+  CGO_ENABLED:
+    sh: '[ ! -z "${CGO_ENABLED}" ] && echo -n "${CGO_ENABLED}" || go env CGO_ENABLED'
+  GO_LDFLAGS: "-s -w"
+  GO_GCFLAGS:
+    sh: '[ ! -z "$(echo -n ${XC_ARCH} | grep mips)" ] && echo -n "all=-d softfloat" || true'
+
+tasks:
+
+  default:
+    deps: [dev-bin]
+    generates:
+      - ./{{.PACKAGE}}_dev.{{.XC_OS}}_{{.XC_ARCH}}
+
+  packscript:
+    desc: prepare make the script.go file
+    cmds:
+      - |
+        x=$(gzip -9c ./script.sh 2>/dev/null | base64 -w0)
+        echo -e "package main\\n\\n//go:generate task packscript\\n\\nconst script string = \"$x\"\\n" | tee script.go
+
+  bin:
+    desc: build a binary
+    cmds:
+      - |
+        go generate
+        CGO_ENABLED=0 \
+        XC_OSARCH={{.XC_OSARCH}} \
+        XC_ARCH={{.XC_ARCH}} \
+        GOARCH={{.XC_ARCH}} \
+        XC_OS={{.XC_OS}} \
+        GOOS={{.XC_OS}} \
+        go build \
+          -ldflags="{{.GO_LDFLAGS}} -X {{.PROJECT}}/cmd.Semver={{.SEMVER}} -X {{.PROJECT}}/cmd.Commit={{.COMMIT}}" \
+          -gcflags="{{default "" .GO_GCFLAGS}}" \
+          -o "./{{.PACKAGE}}.{{.XC_OS}}_{{.XC_ARCH}}" \
+          -a -v;
+        printf '%s\t%s\n' "$(du -sh ./{{.PACKAGE}}.{{.XC_OS}}_{{.XC_ARCH}})" "$(file ./{{.PACKAGE}}.{{.XC_OS}}_{{.XC_ARCH}} | cut -d':' -f2)";
+        [ "{{.XC_OS}}_{{.XC_ARCH}}" == "$(go env GOOS)_$(go env GOARCH)" ] && cp -v ./{{.PACKAGE}}.{{.XC_OS}}_{{.XC_ARCH}} ./{{.PACKAGE}} || true
+    silent: false
+    generates:
+      - ./{{.PACKAGE}}.{{.XC_OS}}_{{.XC_ARCH}}
+
+  dev-bin:
+    desc: build bin for local arch with debugging symbols
+    cmds:
+      - |
+        CGO_ENABLED={{.CGO_ENABLED}} \
+        go build \
+          -ldflags="-X {{.PROJECT}}/cmd.Semver=DEV -X {{.PROJECT}}/cmd.Commit={{.COMMIT}}" \
+          -gcflags="{{default "" .GO_GCFLAGS}}" \
+          -o "./{{.PACKAGE}}_dev.{{.XC_OS}}_{{.XC_ARCH}}" \
+          -v;
+        printf '%s\t%s\n' "$(du -sh ./{{.PACKAGE}}_dev.{{.XC_OS}}_{{.XC_ARCH}})" "$(file ./{{.PACKAGE}}_dev.{{.XC_OS}}_{{.XC_ARCH}} | cut -d':' -f2)";
+        [ "{{.XC_OS}}_{{.XC_ARCH}}" == "$(go env GOOS)_$(go env GOARCH)" ] && cp -v ./{{.PACKAGE}}_dev.{{.XC_OS}}_{{.XC_ARCH}} ./{{.PACKAGE}}_dev || true
+    silent: false
+
+  release:
+    desc: build bins for all supported architectures
+    cmds:
+      - |
+        task clean
+        os_archs="$(go tool dist list | tr '\n' ' ')"
+        for _a in ${os_archs}; do
+          _os="$(echo -n ${_a} | cut -d'/' -f1)"
+          _arch="$(echo -n ${_a} | cut -d'/' -f2)"
+          XC_OS="${_os}" XC_ARCH="${_arch}" task bin
+        done
+        mkdir -vp ./release
+        mv -vf {{.PACKAGE}}.* ./release/
+        cd ./release
+        file ./{{.PACKAGE}}.*
+        sha256sum * | tee -a ./{{.PACKAGE}}.sums
+
+  clean:
+    desc: clean work env
+    cmds:
+      - rm -fr vendor/;
+      - go clean -v -a;
+      - rm -fr ~/.cache/go-build;
+      - find . -maxdepth 2 -type f -executable -exec rm -vrf {} \;
+      - for _d in $(find . -maxdepth 1 -type d -not -name '.*') .; do cd $_d; gofmt -w .; echo "cleaned up $(realpath $_d)"; done;
+    silent: true
+
+  tidy:
+    desc: fmt, lint, everything
+    cmds:
+      - |
+        task clean
+        go mod why
+        go mod tidy
+        for _d in $(find . -maxdepth 1 -type d -not -name '.*') .; do
+          echo -e "\\n\\nChecking $(realpath $_d)..\\n"
+          cd $_d
+          golint .
+          echo -e "\\n\\nREPORT:\\tgo sec\\n"
+          gosec -quiet -vendor -exclude=G104 .
+          cd -
+        done
+        echo -e "\\n\\nREPORT:\\tgo mod graph..\\n"
+        go mod graph
+    silent: true
+
+  vet:
+    desc: run go vet/sec
+    cmds:
+      - task clean
+      - go vet $(go list ./...)

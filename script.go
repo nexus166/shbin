@@ -1,0 +1,5 @@
+package main
+
+//go:generate task packscript
+
+const script string = "H4sICN47U10CA3NjcmlwdC5zaABNjc2SwiAQhO88RS/msFq1xruvkgsJo0xJBgqI6NtLzP5RfeH7umt2H/2SUz+y9CR3jCY7pXYojjNajIAeZo6ekKfEsRybTBS9mWgrXbi5zxtRZLk2RBAz0x6Vi3t/syPvv9d4hgXVSEEJoHkke1TqEhIYLGALnxGrRUV1wcx8hg1QaI8mF6DTIrKe6Vi/acd/8ough0FatLJBSKlfHBNLWXdDd9Ib7k7//DZryS7UtWfSNf8UDy/xTXOfIwEAAA=="
